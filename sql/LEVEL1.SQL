@@ -4,33 +4,31 @@ select count(*) as total_orders from orders;
 --If asked only completed orders
 SELECT COUNT(*) AS total_completed_orders
 FROM orders
-WHERE  field3= 'delivered';
+WHERE  order_status= 'delivered';
 
 --Q2.How many unique customers have placed at least one order?
-select count(distinct field2) as unique_customers from orders;
+select count(*) from orders o join customers c on o.customer_id=c.customer_id;
 
 --Unique customers with delivered orders only:
-SELECT COUNT(DISTINCT field2)
+SELECT COUNT(DISTINCT customer_id)
 FROM orders
-WHERE field3='delivered';
+WHERE order_status='delivered';
 
 --Unique customers in a specific year:
-SELECT COUNT(DISTINCT field2) as unique_customers
+SELECT COUNT(DISTINCT customer_id) as unique_customers
 FROM orders
-WHERE strftime('%Y', field4) = '2018';
+WHERE strftime('%Y', order_purchase_timestamp) = '2018';
 
 --What is the total revenue generated from all completed orders?
-select round(sum(op.payment_value),2) as total_payments from order_payments op
-join orders o on op.order_id=o.order_id
-where order_status='delivered';
+select round(sum(op.payment_value),2) from order_payments op join orders o ON
+op.order_id=o.order_id where o.order_status="delivered";
 
 --Revenue by month
-select strftime('%Y-%m',order_purchase_timestamp) as MONTH,
-round(sum(op.payment_value)) as revenue
-from orders o
-join order_payments op on o.order_id=op.order_id
-where o.order_status='delivered'
-group by MONTH
+--Trend over time month-wise-revenue(We can make a kpi of this trend)
+SELECT strftime("%Y-%m",order_purchase_timestamp) as MONTH,
+round(sum(op.payment_value),2)as Revenue_by_month from orders o join order_payments op on o.order_id=
+op.order_id where order_status="delivered"
+GROUP BY MONTH
 order by month;
 
 --Revenue vs installments
@@ -51,6 +49,7 @@ GROUP BY payment_installments
 order by avg_order_value desc;
 
 --Monthly AOV (Delivered orders only)
+--Monthly trend of AOV(We can make the dashboard)
 select strftime('%Y-%m',o.order_purchase_timestamp) as month,
 sum(p.payment_value)*1.0/count(distinct o.order_id) as AOV
 from orders o
@@ -60,12 +59,12 @@ group by MONTH
 order by AOV desc;
 
 --5 How many orders were placed each month? Show year-month and order count.
-select count(o.order_id) as number_of_orders,
-strftime('%Y-%m',o.order_purchase_timestamp) as month from orders o
+select strftime('%Y-%m',o.order_purchase_timestamp) as month,count(o.order_id) as number_of_orders from orders o
 group by strftime('%Y-%m',o.order_purchase_timestamp)
 order by month;
 
 -- By using Lead and lag we can find which month no of orders are decreased or increased from previous
+-- we can see the order trend
 with order_details AS(
     select strftime('%Y-%m',o.order_purchase_timestamp) as month,
     count(o.order_id) as total_orders
@@ -86,17 +85,17 @@ end as trend
 from order_details;
 
 --Which top 10 cities have the highest number of customers?
-select c.customer_city,count(distinct c.customer_id) as number_of_customers
-from customers c
-group by c.customer_city
-order by number_of_customers desc
+select customer_city,count(*) as total_customers from customers
+group by customer_city
+ORDER BY total_customers DESC
 LIMIT 10;
+
 
 --------
 
 with customer_detail AS(
     select 
-  c.customer_city,count(distinct c.customer_id) as number_of_customers
+  c.customer_city,count(c.customer_id) as number_of_customers
 from customers c
 group by c.customer_city
 ),
@@ -133,33 +132,27 @@ WHERE revenue_rank <= 10
 AND customer_rank <= 10;
 
 --Top cities contributing to 80% revenue
-WITH revenue_details AS (
-    SELECT
-        c.customer_city,
-        SUM(op.payment_value) AS total_revenue
-    FROM customers c
-    JOIN orders o ON c.customer_id = o.customer_id
-    JOIN order_payments op ON o.order_id = op.order_id
-    GROUP BY c.customer_city
+with city_sum as(
+    select sum(op.payment_value) as total_revenue,c.customer_city
+    from order_payments op join orders o on op.order_id=o.order_id
+    join customers c on o.customer_id=c.customer_id
+    group by customer_city
 ),
--- if you will not write over then it will loose the city-level-detail
-grand_revenue AS(
+ranked as(
     select *,
-    sum(total_revenue) over()as grand_total_revenue
-    from revenue_details  
+    sum(total_revenue) over() as grand_total_revenue from city_sum
 ),
-percent_co AS(
+percent_contribution AS(
     select *,
-    total_revenue*100/grand_total_revenue as percent_contribution 
-    from grand_revenue
+    total_revenue*100/grand_total_revenue as contribution from
+    ranked
 ),
 cummulative AS(
-    select *,
-    sum(percent_contribution)over(order by total_revenue desc) as cummulative_sum
-    from percent_co
+    select *, sum(contribution)over(order by total_revenue desc) as revenue_contribution from percent_contribution
 )
 select * from cummulative
-where cummulative_sum<=80;
+where revenue_contribution<=80;
+
 
 
 --How many sellers are registered on the platform?
@@ -249,3 +242,86 @@ ON p.seller_id = c.seller_id
 WHERE c.seller_id IS NULL;
 
 
+--What is the total number of products listed?
+
+/*This tells:
+Catalog size
+Product variety
+Supply diversity
+
+Track catalog growth over time
+Measure marketplace expansion
+Compare with competitors*/
+
+select count(distinct product_id) as total_no_product from products;
+
+
+--How many of these products were actually sold?
+select count(distinct p.product_id)
+from order_items oi left join products p on 
+p.product_id=oi.product_id;
+
+--Which top 10 product categories generate the highest revenue?
+SELECT 
+    pc.product_category_name_english,
+    ROUND(SUM(oi.price), 0) AS category_revenue
+FROM order_items oi
+JOIN products p 
+    ON oi.product_id = p.product_id
+JOIN product_category_name pc 
+    ON p.product_category_name = pc.product_category_name
+GROUP BY pc.product_category_name_english
+ORDER BY category_revenue DESC
+LIMIT 10;
+
+--How many orders have a review score of 5?
+WITH five_star_rating AS (
+    SELECT COUNT(DISTINCT order_id) AS total_orders
+    FROM order_reviews
+    WHERE review_score = 5
+),
+total_orders AS (
+    SELECT COUNT(DISTINCT order_id) AS total_orders_all
+    FROM order_reviews
+)
+
+SELECT 
+    f.total_orders,
+    t.total_orders_all,
+    f.total_orders * 100.0 / t.total_orders_all AS percent_5_star
+FROM five_star_rating f, total_orders t;
+
+
+--What is the distribution of payment types by number of orders?
+
+/* We are asking to find total number of orders for each payment type */
+select payment_type,count(distinct order_id) as total_orders from order_payments 
+group by payment_type
+ORDER BY total_orders desc;
+
+--If you want percent distribution
+
+with order_type_payment as(
+select payment_type,count(distinct order_id) as total_orders from order_payments 
+group by payment_type
+ORDER BY total_orders desc
+),
+
+total_orders_count AS(
+    select count(distinct order_id) as grand_total_orders from order_payments
+)
+select t.payment_type,t.total_orders,round(t.total_orders*100.0/f.grand_total_orders,4) as percent_contri from 
+order_type_payment t,total_orders_count f;
+
+/* Majority of transactions are concentrated in a 
+few payment methods, indicating strong customer preference 
+patterns which can guide payment optimization strategies.
+
+OR
+
+Credit cards dominate transactions, 
+suggesting higher trust in digital payments and potential for EMI-based upselling.
+
+ */
+
+ --What is the total revenue generated by each payment type?
