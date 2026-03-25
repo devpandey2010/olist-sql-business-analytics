@@ -96,3 +96,45 @@ limit 10;
 
 /* High AOV + low customers → niche premium market
 Low AOV + high customers → mass market */
+
+--Q4.What is the monthly revenue trend over time?
+select strftime("%Y-%m",o.order_purchase_timestamp) as month,
+round(sum(op.payment_value),2) as month_wise_revenue,count(distinct o.order_id) as no_of_orders_per_month from orders o join order_payments op on o.order_id=op.order_id
+where order_status='delivered'
+group by month;
+
+--**Insights**
+/* Monthly Revenue Trend over Time is very important as it 
+reflects the sale or revenue generated and also whether
+comapany meets its target monthly wise or not 
+It also reflects which time of the year our revenue is low 
+and by that we can analyze the reason behind low revenue */
+
+WITH monthly_revenue AS (
+    SELECT 
+        strftime('%Y-%m', o.order_purchase_timestamp) AS month,
+        SUM(op.payment_value) AS revenue
+    FROM orders o 
+    JOIN order_payments op 
+        ON o.order_id = op.order_id
+    WHERE o.order_status = 'delivered'
+    GROUP BY strftime('%Y-%m', o.order_purchase_timestamp)
+)
+
+SELECT 
+    month,
+    revenue,
+
+    LAG(revenue) OVER (ORDER BY month) AS previous_month_revenue,
+
+    revenue - LAG(revenue) OVER (ORDER BY month) AS revenue_change,
+
+    CASE 
+        WHEN LAG(revenue) OVER (ORDER BY month) IS NULL THEN 'No previous data'
+        WHEN revenue > LAG(revenue) OVER (ORDER BY month) THEN 'Increased'
+        WHEN revenue < LAG(revenue) OVER (ORDER BY month) THEN 'Decreased'
+        ELSE 'Same'
+    END AS trend
+
+FROM monthly_revenue
+ORDER BY month;
