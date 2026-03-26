@@ -138,3 +138,106 @@ SELECT
 
 FROM monthly_revenue
 ORDER BY month;
+
+--Q.Which product categories have the highest average review scores?
+
+----**Wrong Approach**----
+
+/* we are directly joining order_reviews with order_items
+while order_reviews id order level and order items is item LEVEL
+so while summing up 1 order can have multple items then 1 review can be added multiple 
+time so first we need to match the level of two tables then join the table
+Granularity mismatch = wrong results */
+
+/* with review_details as(
+select product_category_name_english,sum(orr.review_score) as total_category_review,count(orr.review_id) as total_no_reviews
+from order_reviews orr join  order_items  oi on orr.order_id=oi.order_id JOIN
+products p on oi.product_id=p.product_id join product_category_name pc on p.product_category_name=pc.product_category_name
+group by product_category_name_english
+)
+select *,round(total_category_review*1.0/total_no_reviews,2) as avg_review_score from review_details
+order by avg_review_score desc; */
+
+
+
+WITH order_category AS (
+    SELECT DISTINCT
+        oi.order_id,
+        pc.product_category_name_english
+    FROM order_items oi
+    JOIN products p 
+        ON oi.product_id = p.product_id
+    JOIN product_category_name pc 
+        ON p.product_category_name = pc.product_category_name
+),
+
+review_details AS (
+    SELECT 
+        oc.product_category_name_english,
+        AVG(orr.review_score) AS avg_review_score,
+        COUNT(*) AS total_reviews
+    FROM order_category oc
+    JOIN order_reviews orr 
+        ON oc.order_id = orr.order_id
+    GROUP BY oc.product_category_name_english
+)
+
+SELECT *
+FROM review_details
+ORDER BY avg_review_score DESC;
+
+
+--Q.Average Review Score per Seller(Granularity mismatch)
+
+/*  The thing is 1 order is an order_level that is it may contain multiple
+ items and multiple items can have multiple sellers so we join directly 
+ then there is chances of duplication which will lead to wrong average */ 
+
+select oi.seller_id,avg(orr.review_score) as avg_review_score
+from order_items oi join order_reviews orr ON
+oi.order_id=orr.order_id
+group by oi.seller_id
+order by avg_review_score desc;
+
+/* In this Question we are allowing the duplication why?
+
+Because suppose an order_id have review 5 but that order_id have multiple sellers
+then that review should be given to which seller,
+that review should be given to each seller why? 
+
+Customer rates ORDER  
+But experience includes ALL sellers  
+So ALL sellers share that rating 
+
+Since multiple sellers can contribute to a single order, the order-level review is assigned 
+to all participating sellers to evaluate their overall contribution to customer experience.*/
+
+/* Who should get the credit?
+Only once → remove duplicates
+Multiple entities → allow duplicates */
+
+/* When joining tables of different granularity, 
+I first identify the level of analysis and decide whether duplication represents real relationships or introduces bias, 
+and accordingly either preserve or eliminate it. */
+
+-----Q.Revenue per Customer vs Number of Items
+
+--Revenue per Customer-->Order level
+with revenue as(
+select c.customer_unique_id,sum(op.payment_value) as revenue_per_customer
+from customers c join orders orr on c.customer_id=orr.customer_id join order_payments op ON
+orr.order_id=op.order_id 
+where orr.order_status="delivered"
+group by customer_unique_id
+),
+items as(
+select c.customer_unique_id,count(oi.order_item_id) as number_of_items_per_customer
+from customers c join orders o on c.customer_id=o.customer_id join order_items oi ON
+o.order_id=oi.order_id
+where o.order_status="delivered"
+group by customer_unique_id
+)
+select r.customer_unique_id,r.revenue_per_customer,
+t.number_of_items_per_customer from revenue r
+JOIN items t
+    ON r.customer_unique_id = t.customer_unique_id;
