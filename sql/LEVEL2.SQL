@@ -241,3 +241,35 @@ select r.customer_unique_id,r.revenue_per_customer,
 t.number_of_items_per_customer from revenue r
 JOIN items t
     ON r.customer_unique_id = t.customer_unique_id;
+
+
+--Q.Seller contribution to order revenue
+
+/* The thing is we have total revenue of a order 
+but a order have multiple sellers now what we have to do is we have to find the total sells done 
+by a particular seller then divide by total revenue to get its contibution */
+
+ with order_value AS(
+    select o.order_id,sum(op.payment_value) as total_order_revenue FROM
+    order_payments op join orders o on op.order_id=o.order_id
+    where o.order_status='delivered'
+    group by o.order_id
+ ),
+ --per order per seller
+ seller_details as(
+    select o.order_id,oi.seller_id,sum(oi.price) as sellers_sum from order_items oi 
+    join orders o on oi.order_id=o.order_id 
+    where o.order_status='delivered'
+    group by oi.order_id,oi.seller_id
+ )
+ select r.order_id,r.total_order_revenue,t.sellers_sum,
+ round(t.sellers_sum*100.0/r.total_order_revenue,2) as seller_contribution
+ from order_value r join seller_details t ON
+ r.order_id=t.order_id;
+ 
+ /* We can now:
+Find top contributing sellers
+Analyze seller dependency
+Detect monopolistic sellers */
+
+--Q.What is the average delivery time by state?
