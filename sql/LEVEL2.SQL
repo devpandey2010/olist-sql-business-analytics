@@ -272,4 +272,113 @@ Find top contributing sellers
 Analyze seller dependency
 Detect monopolistic sellers */
 
---Q.What is the average delivery time by state?
+--Q.What is the revenue contribution percentage of the top 10 sellers?
+
+/* we need to find total revenue first
+and then we need to find total  revenue of each seller
+be carefull about the granularity
+ */
+
+ with total_revenue AS(
+    select sum(op.price) as total_revenue
+    from order_items op
+
+ ),
+seller_contribution as(
+    select seller_id,sum(price) as total_seller_revenue
+    from order_items
+    group by seller_id
+
+
+)
+select t.seller_id,round(t.total_seller_revenue,2),round(r.total_revenue,2),round(t.total_seller_revenue*100.0/r.total_revenue,2)as percentage_contr
+from total_revenue r,seller_contribution t
+group by t.seller_id 
+order by percentage_contr desc
+limit 10;
+
+--Which top 10 customers have spent the most on the platform?
+
+ /* Basically it is asking that which are the top 10 customers who have 
+ paid most on the platform and since it is specified on the platform so we will
+ sum paymnet value not the price because payment value is order level which include
+ total revenue of platform(product price,shipping cost ,delivery cost,discount)  */
+
+ select c.customer_unique_id,sum(op.payment_value) as total_spent_per_customer
+ from customers c join orders o on c.customer_id=o.customer_id join order_payments op 
+ on o.order_id=op.order_id
+ where o.order_status='delivered'
+ group by c.customer_unique_id
+ order by total_spent_per_customer desc
+ limit 10;
+
+
+with customer_details AS(
+    select c.customer_unique_id,sum(op.payment_value) as total_spent_per_customer
+ from customers c join orders o on c.customer_id=o.customer_id join order_payments op 
+ on o.order_id=op.order_id
+ where o.order_status='delivered'
+ group by c.customer_unique_id
+ order by total_spent_per_customer desc
+),
+Platform_details AS(
+  select sum(op.payment_value) as total_platform_revenue
+  from order_payments op join orders o on op.order_id=o.order_id
+  where o.order_status="delivered"
+),
+percentage_contribution  AS(
+    select r.customer_unique_id,r.total_spent_per_customer,t.total_platform_revenue,round(r.total_spent_per_customer*100.0/t.total_platform_revenue,2) as percent_contri
+    from customer_details r,platform_details t
+),
+cummulative AS(
+    select *,round(sum(percent_contri)over(order by total_spent_per_customer desc),2) as cummulative_sum from percentage_contribution
+)
+select * from cummulative 
+where cummulative_sum<=80;
+
+/* There is two ways to do pareto either you first calculate the SUM percentage 
+then doing cummulative on percentage or you do cummulative on sum and then last calculate the percent */
+
+with customer_details AS (
+    select 
+        c.customer_unique_id,
+        sum(op.payment_value) as total_spent_per_customer
+    from customers c 
+    join orders o 
+        on c.customer_id = o.customer_id 
+    join order_payments op 
+        on o.order_id = op.order_id
+    where o.order_status = 'delivered'
+    group by c.customer_unique_id
+),
+
+platform_details AS (
+    select 
+        sum(op.payment_value) as total_platform_revenue
+    from order_payments op 
+    join orders o 
+        on op.order_id = o.order_id
+    where o.order_status = 'delivered'
+),
+
+cumulative AS (
+    select 
+        cd.customer_unique_id,
+        cd.total_spent_per_customer,
+        pd.total_platform_revenue,
+
+        sum(cd.total_spent_per_customer) 
+            over (order by cd.total_spent_per_customer desc) 
+            as cumulative_revenue
+
+    from customer_details cd
+    cross join platform_details pd
+)
+
+select 
+    customer_unique_id,
+    total_spent_per_customer,
+    round(cumulative_revenue * 100.0 / total_platform_revenue, 2) as cumulative_percentage
+from cumulative
+where (cumulative_revenue * 100.0 / total_platform_revenue) <= 80;
+
