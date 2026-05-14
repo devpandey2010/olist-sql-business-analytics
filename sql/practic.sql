@@ -259,11 +259,157 @@ previous_details as(
     Lag(current_revenue)over(order by current_month) as prev_revenue
     from revenue_details
 )
-select * ,CASE
+select * ,
+CASE
     WHEN prev_revenue = 0 OR prev_revenue IS NULL THEN NULL
-    ELSE ROUND((prev_revenue - current_revenue) * 100.0 / prev_revenue, 2)
+    ELSE ROUND((prev_revenue - current_revenue) * 100.0 / prev_revenue, 2)  --Whenever we are dividing something we have to think of zero
 END AS percentage_drop from previous_details
 where percentage_drop>20.0 and prev_revenue is not null
 order by percentage_drop desc;
 
+/*For each order of each customer, show the next order's purchase date and the number of days until
+their next order. If no next order exists, show NULL. This helps identify customers likely to churn.*/
 
+--RETURN customer_unique_id, order_id, order_date, next_order_date, days_to_next_order
+with customer_details AS(
+    select c.customer_unique_id,o.order_id,
+    Date(o.order_purchase_timestamp) as order_date from customers c   
+    join orders o on c.customer_id=o.customer_id
+),
+Future_orders as (
+    select *,
+    Lead(order_date,1)over(partition by customer_unique_id order by order_date)as next_order_date
+    from customer_details
+),
+Gap_between_orders as(
+    select *,
+    julianday(next_order_date)-julianday(order_date) as days_to_next_order
+    from future_orders
+)
+select * from Gap_between_orders;
+
+/*For each seller, find months where they had NO sales in the following month (i.e. LEAD revenue is
+NULL or 0). These are sellers who stopped selling. Return seller_id, their last active month, and total
+revenue in that month.*/
+--RETURN seller_id, last_active_month, revenue_in_last_month
+
+with seller_details AS(
+    select oi.seller_id,strftime('%Y-%m',o.order_purchase_timestamp) as active_month,
+    round(sum(oi.price),2)as revenue_last_month from order_items oi
+    join orders o on o.order_id=oi.order_id
+    group by strftime('%Y-%m',o.order_purchase_timestamp),seller_id
+),
+Future_details AS(
+    select *,
+    Lead(revenue_last_month,1)over(partition by seller_id order by active_month) as following_revenue,
+    Lead(revenue_last_month,2)over(partition by seller_id order by active_month) as Next_to_next_month
+    from seller_details
+)
+select * from future_details
+where(following_revenue is null or following_revenue=0)
+and next_to_next_month is not null;
+
+/*For each month and product category, show the current revenue and next month's revenue. Classify
+each row as 'Growth Expected', 'Decline Expected', or 'End of Data' based on the next month's value.
+Order by category and month.*/
+--RETURN category, month, current_revenue, next_month_revenue, forecast_label
+with details as(
+    select coalesce(p.product_category_name,"Uncategorized") as product_category_name,strftime('%Y-%m',o.order_purchase_timestamp) as current_month,
+    round(sum(oi.price),2) as current_revenue from orders o join order_items oi on
+    o.order_id=oi.order_id join products p on oi.product_id=p.product_id
+    group by current_month,p.product_category_name
+),
+Future_details AS(
+    select *,
+    lead(current_revenue)over(partition by product_category_name order by current_month) as next_month_revenue
+    from details
+),
+classify as(
+    select *,
+    CASE
+    when next_month_revenue>current_revenue then "Growth expected"
+    when next_month_revenue<current_revenue then "decline Expected"
+    when next_month_revenue=current_revenue then "Same Sale"
+    ELSE
+    "End of Data"  -- to handle null
+    end as Clasiify_report
+    from future_details
+)
+select * from classify
+order by product_category_name,current_month;
+
+--"How would you show only categories that have at least 3 consecutive months of growth?"
+/*Approach 1 — The Classic Gaps & Islands Pattern
+The idea: assign a group number to consecutive growth months. 
+Rows in the same group = consecutive streak*/
+
+WITH details AS (
+    SELECT 
+        p.product_category_name AS category,
+        strftime('%Y-%m', o.order_purchase_timestamp) AS month,
+        ROUND(SUM(oi.price), 2) AS revenue
+    FROM orders o
+    JOIN order_items oi ON o.order_id = oi.order_id
+    JOIN products p ON oi.product_id = p.product_id
+    WHERE p.product_category_name IS NOT NULL
+    GROUP BY category, month
+),
+with_growth AS (
+    SELECT *,
+        LAG(revenue) OVER (PARTITION BY category ORDER BY month) AS prev_revenue,
+        -- is this month a growth month? 1 = yes, 0 = no
+        CASE
+            WHEN revenue > LAG(revenue) OVER (
+                PARTITION BY category ORDER BY month) 
+            THEN 1 ELSE 0
+        END AS is_growth
+    FROM details
+),
+with_group AS (
+    SELECT *,
+        -- ROW_NUMBER globally - ROW_NUMBER only on growth rows
+        -- = same number for consecutive growth rows (the island trick)
+        ROW_NUMBER() OVER (PARTITION BY category ORDER BY month)
+        -
+        ROW_NUMBER() OVER (PARTITION BY category, is_growth ORDER BY month)
+        AS streak_group
+    FROM with_growth
+    WHERE is_growth = 1  -- only growth months
+)
+SELECT 
+*,
+    category,
+    MIN(month) AS streak_start,
+    MAX(month) AS streak_end,
+    COUNT(*) AS consecutive_growth_months
+FROM with_group
+GROUP BY category, streak_group
+HAVING COUNT(*) >= 3
+ORDER BY consecutive_growth_months DESC;
+
+/*Find all customers who have logged in (placed an order) for at least 3 consecutive months.
+ Return the customer, the streak start month, streak end month, and the length of the streak.
+A consecutive month streak means months like 2017-01, 2017-02, 2017-03 with no gap in between.
+Return: customer_unique_id, streak_start, streak_end, streak_length.*/
+
+/*For each product category, show each seller's total revenue AND the revenue of the top seller in that
+category. Calculate what percentage of the top seller's revenue each seller achieves. Order by
+category and percentage descending.
+RETURN category, seller_id, seller_revenue, top_seller_revenue, pct_of_top*/
+
+with seller_details AS(
+    select coalesce(p.product_category_name,"Uncategorized") as product_category_name,oi.seller_id,
+    sum(oi.price) as seller_revenue 
+    from order_items oi join products p on 
+    p.product_id=oi.product_id
+    group by oi.seller_id,p.product_category_name 
+),
+Details AS(
+    select *,
+    First_value(seller_revenue)over(partition by product_category_name order by seller_revenue desc)as top_seller_revenue
+    from seller_details 
+    
+)
+select *,round(seller_revenue*100.0/top_seller_revenue,2) as pct_of_top from details
+where top_seller_revenue is not null
+order by product_category_name,pct_of_top desc;
