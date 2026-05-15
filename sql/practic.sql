@@ -413,3 +413,70 @@ Details AS(
 select *,round(seller_revenue*100.0/top_seller_revenue,2) as pct_of_top from details
 where top_seller_revenue is not null
 order by product_category_name,pct_of_top desc;
+
+WITH customer_details AS (
+    SELECT
+        c.customer_unique_id,
+        o.order_id,
+        DATE(o.order_purchase_timestamp) AS order_date,
+        -- handle multiple payment rows per order
+        MIN(op.payment_type) AS payment_type
+    FROM customers c
+    JOIN orders o ON c.customer_id = o.customer_id
+    JOIN order_payments op ON o.order_id = op.order_id
+    GROUP BY c.customer_unique_id, o.order_id, o.order_purchase_timestamp
+),
+with_first AS (
+    SELECT *,
+        -- first payment type per customer by date
+        FIRST_VALUE(payment_type) OVER (
+            PARTITION BY customer_unique_id
+            ORDER BY order_date
+        ) AS first_payment_type
+    FROM customer_details
+)
+-- NOW filter in outer query where window result is available
+SELECT
+    customer_unique_id,
+    order_id,
+    order_date,
+    payment_type,
+    first_payment_type
+FROM with_first
+WHERE payment_type != first_payment_type  -- DIFFERENT from first 
+ORDER BY customer_unique_id, order_date;
+/*For each seller, calculate the cumulative revenue by month. Then for each month, show how much the
+cumulative revenue has grown compared to the seller's very first month's revenue. Show absolute
+growth and percentage growth from their first month.*/
+--RETURN seller_id, month, monthly_revenue, cumulative_revenue, first_month_revenue, pct_growth_from_start
+
+with seller_details AS(
+    select oi.seller_id,strftime('%Y-%m',o.order_purchase_timestamp) as month,
+    round(sum(oi.price),2)as monthly_revenue from order_items oi join orders o on oi.order_id=o.order_id
+    group by month,oi.seller_id
+),
+cummulative_details as(
+    select *,
+    sum(monthly_revenue)over(partition by seller_id order by month)as cummulative_sum
+    from seller_details
+
+),
+comparison as(
+    select *,
+    first_value(monthly_revenue)over(partition by seller_id order by month) as first_month_revenue
+    from cummulative_details
+)
+select *,
+(cummulative_sum-first_month_revenue) as absolute_growth,
+    (cummulative_sum-first_month_revenue)*100.0/first_month_revenue  as pct_growth from comparison
+    where first_month_revenue is not null;
+
+/*For each customer, show every order they placed along with the payment value of their MOST
+RECENT order. This helps identify if customers are spending more or less over time compared to their
+latest order. Remember the frame clause trap.*/
+--RETURN customer_unique_id, order_id, order_date, order_payment, most_recent_payment
+
+/*For each product category, find the first month it had any sales and the last month it had any sales. For
+each month of sales, show both. Then find categories where the last month's revenue is LOWER than
+the first month's revenue (declining categories).*/
+--RETURN category, month, revenue, first_month_revenue, last_month_revenue, is_declining
