@@ -476,7 +476,205 @@ RECENT order. This helps identify if customers are spending more or less over ti
 latest order. Remember the frame clause trap.*/
 --RETURN customer_unique_id, order_id, order_date, order_payment, most_recent_payment
 
+with customer_details as(
+    select c.customer_unique_id,o.order_id,strftime('%Y-%m',o.order_purchase_timestamp) as order_date,
+    op.payment_value from customers c join orders o on c.customer_id=o.customer_Id join order_payments op 
+    on op.order_id=o.order_id 
+),
+Details as(
+    select *,
+    Last_value(payment_value)over(partition by customer_unique_id order by order_date rows between unbounded preceding and unbounded following)as most_recent_payment
+    from customer_details
+)
+select * from details
+order by customer_unique_id,order_date;
+------
 /*For each product category, find the first month it had any sales and the last month it had any sales. For
 each month of sales, show both. Then find categories where the last month's revenue is LOWER than
 the first month's revenue (declining categories).*/
 --RETURN category, month, revenue, first_month_revenue, last_month_revenue, is_declining
+with product_details as(
+    select coalesce(p.product_category_name,"Uncategorized") as product_category_name,strftime('%Y-%m',o.order_purchase_timestamp) as order_date,
+    sum(oi.price) as revenue from orders o join order_items oi on 
+    o.order_id=oi.order_id join products p on oi.product_id=p.product_id
+    group by p.product_category_name,order_date
+),
+Details AS(
+    select *,
+    First_value(revenue)over(partition by product_category_name order by order_date) as first_month_revenue,
+    Last_value(revenue)over(partition by product_category_name order by order_date Rows between Unbounded preceding and Unbounded following) as Last_month_revenue
+    from product_details
+
+)
+select * from details
+where (first_month_revenue>last_month_revenue)
+and first_month_revenue is not null and last_month_revenue is not null;
+
+/*For each product category, find the 2nd highest revenue seller and the 3rd highest revenue seller. If a
+category has fewer than 3 sellers, show NULL for 3rd place. Show all three positions in a single row
+per category.*/
+--RETURN category, top1_seller_revenue, top2_seller_revenue, top3_seller_revenue
+
+/* whenever you want something 2nd higest third highest you can go with nthvalue*/
+/* also we can use nested query*/
+
+with product_details AS(
+    select coalesce(p.product_category_name,"Uncategorised") as product_category_name,seller_id,
+    sum(oi.price) as revenue from order_items oi 
+    join products p on oi.product_id=p.product_id
+    group by p.product_category_name,seller_id
+),
+details AS(
+    select *,
+    first_value(revenue)over(partition by product_category_name order by revenue desc) as top1_seller_revenue,
+    nth_value(revenue,2)over(partition by product_category_name order by revenue desc rows between unbounded preceding and unbounded following) as top2_seller_revenue,
+     nth_value(revenue,3)over(partition by product_category_name order by revenue desc rows between unbounded preceding and unbounded following) as top3_seller_revenue
+    from product_details
+)
+select distinct product_category_name,top1_seller_revenue,top2_seller_revenue,top3_seller_revenue from details
+order by product_category_name;
+
+
+/*Segment all customers into 4 quartiles based on their total spending (highest spenders in quartile 1).
+Label each quartile as 'Platinum', 'Gold', 'Silver', 'Bronze'. Return customer_unique_id, total_spent,
+quartile_number, and tier_label.*/
+
+with customer_details
+as(
+    select c.customer_unique_id,
+    round(sum(op.payment_value),2) as total_spent
+    from customers c join orders o on c.customer_id=o.customer_id
+    join order_payments op on o.order_id=op.order_id
+    group by c.customer_unique_id 
+),
+Details as(
+    select *,
+    NTILE(4)over(order by total_spent desc) as Quartile 
+    from customer_details
+)
+select *,
+case
+ WHEN Quartile=1 then "Platinum"
+ when Quartile=2 then "Gold"
+ when Quartile=3 then "Silver"
+ else "Bronze"
+ end as tier_label
+ from details;
+
+----Very Good Question
+
+/*For each product category, divide sellers into 10 deciles based on their total revenue (highest revenue
+= decile 1). Find all sellers who are in decile 1 (top 10%) in AT LEAST 2 different categories. 
+Return seller_id and count of categories where they are top decile.*/
+--RETURN seller_id, top_decile_category_count
+
+with product_details AS(
+    select p.product_category_name,oi.seller_id,
+    round(sum(oi.price),2) as total_revenue 
+    from order_items oi join products p on 
+    oi.product_id=p.product_id
+    group by oi.seller_id,p.product_category_name
+),
+Details AS(
+    select *,
+    ntile(10)over(Partition by product_category_name order by total_revenue desc) as Quartile
+    from product_details
+),
+Further as(
+    select seller_id,count(product_category_name) as top_decile_category_count
+    from details
+    where quartile=1
+    group by seller_id
+    having count(product_category_name)>=2
+)
+select * from further
+order by top_decile_category_count desc;
+
+/*Step 1 → Aggregate revenue per seller per category
+Step 2 → NTILE(10) per category to find deciles
+Step 3 → Filter decile=1, then count categories per seller
+          HAVING count >= 2*/
+
+
+WITH product_details AS (
+    SELECT
+        p.product_category_name,
+        oi.seller_id,
+        ROUND(SUM(oi.price), 2) AS total_revenue
+    FROM order_items oi
+    JOIN products p ON oi.product_id = p.product_id
+    GROUP BY oi.seller_id, p.product_category_name
+),
+with_decile AS (
+    SELECT *,
+        NTILE(10) OVER (
+            PARTITION BY product_category_name
+            ORDER BY total_revenue DESC  -- highest = decile 1
+        ) AS decile
+    FROM product_details
+),
+top_decile_sellers AS (
+    SELECT
+        seller_id,
+        COUNT(DISTINCT product_category_name) AS top_decile_category_count
+    FROM with_decile
+    WHERE decile = 1          -- row level filter BEFORE grouping
+    GROUP BY seller_id        -- group by seller not category
+    HAVING COUNT(DISTINCT product_category_name) >= 2  -- at least 2 categories
+)
+SELECT * FROM top_decile_sellers
+ORDER BY top_decile_category_count DESC;
+
+/*For each seller, calculate their percentile rank among ALL sellers based on total revenue. Show what
+percentage of sellers earn less than them. Return seller_id, total_revenue, percent_rank, and a label:
+'Top 10%', 'Top 25%', 'Top 50%', or 'Bottom 50%'*/
+--RETURN seller_id, total_revenue, percent_rank, performance_label
+
+with seller_details AS(
+    select oi.seller_id,round(sum(oi.price),2) as total_revenue
+    from order_items oi
+    group by oi.seller_id
+),
+Ranked as(
+    select *,
+    (1-percent_Rank()over(order by total_revenue desc))*100.0 as percent_rank
+    from seller_details
+)
+select *,
+case 
+WHEN percent_rank>=90 then "Top 10%"
+when percent_rank>=75  then "Top 25%"
+when percent_rank>=50 then "Top 50%"
+else "Bottom 50%"
+end as performance_labe
+from ranked;
+
+/*For each product category, find sellers whose revenue percent rank is in the TOP 20% within their
+category (percent_rank >= 0.8 when ordered ASC). But ALSO show their GLOBAL percent rank
+among all sellers. Return category, seller_id, revenue, category_percent_rank, global_percent_rank.*/
+
+--RETURN category, seller_id, revenue, category_pct_rank, global_pct_rank
+
+with seller_details AS(
+    select coalesce(p.product_category_name,"Uncategorised") as product_category_name,
+    oi.seller_id,round(sum(oi.price),2) as total_revenue
+    from order_items oi join products p ON
+    oi.product_id=p.product_id
+    group by oi.seller_id,p.product_category_name
+),
+Ranked as(
+    select*,
+    percent_rank()over(partition by product_category_name order by total_revenue) as category_pct_rank,
+    percent_rank()over(order by total_revenue) as global_percent_rank
+    from seller_details
+)
+select * from Ranked
+where category_pct_rank>=0.8;
+
+/*"A seller has category_pct_rank=0.95 but global_pct_rank=0.4. What does this tell you?"
+
+They're a top performer in their category but average globally. 
+This category might be less competitive — fewer sellers, lower revenue bar. 
+Useful insight for business strategy.
+
+
