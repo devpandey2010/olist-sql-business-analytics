@@ -675,6 +675,44 @@ where category_pct_rank>=0.8;
 
 They're a top performer in their category but average globally. 
 This category might be less competitive — fewer sellers, lower revenue bar. 
-Useful insight for business strategy.
+Useful insight for business strategy.*/
+
+
+/*For each seller, calculate the cumulative distribution of their revenue among all sellers. Find sellers
+who fall in the BOTTOM 30% of revenue (cume_dist <= 0.3). These are underperforming sellers.
+Return seller_id, total_revenue, cume_dist_value.*/
+ with seller_details as(
+    select oi.seller_id,
+    round(sum(oi.price),2) as total_revenue
+    from order_items oi
+    group by seller_id
+ ),
+ cumm_dis as(
+    select *,
+    cume_dist()over(order by total_revenue) as cummutive_revenue
+    from seller_details
+ )
+select * from cumm_dis
+where cummutive_revenue<=0.3;
+
+/*For each seller, show both PERCENT_RANK and CUME_DIST side by side ordered by total revenue
+ASC. Add a column showing the DIFFERENCE between cume_dist and percent_rank for each seller.
+Find sellers where this difference is greater than 0.1 — these indicate areas where ties exist in the
+data. Return seller_id, revenue, percent_rank, cume_dist, difference.*/
+
+with seller_details AS(
+    select oi.seller_id,
+    round(sum(oi.price),2) as revenue
+    from order_items oi 
+    group by oi.seller_id
+),
+Details as(
+    select *,
+    percent_rank()over(order by revenue) as pct_rank,
+    cume_dist()over(order by revenue) as cum_dist
+    from seller_details
+)
+select *,(cum_dist-pct_rank) as difference from details
+where difference>0.1;
 
 
